@@ -1,3 +1,4 @@
+
 """
 索引 Agent (IndexingAgent)
 使用 ChromaDB 构建论文摘要的向量索引，用于 RAG 检索
@@ -87,13 +88,29 @@ def _ensure_posthog_capture_compatibility() -> None:
 _ensure_posthog_capture_compatibility()
 
 
+import os
+from chromadb.utils import embedding_functions
+from chromadb.config import Settings
+import chromadb
+
 class IndexingAgent:
-    """索引 Agent，管理论文的向量化和检索"""
-    
     def __init__(self):
-        """初始化 ChromaDB 客户端"""
         try:
-            # 初始化 ChromaDB 客户端（持久化存储）
+            # === 指定本地模型路径 ===
+            local_model_path = "/mnt/workspace/.cache/modelscope/models/sentence-transformers/all-MiniLM-L6-v2"
+            
+            # 检查路径是否存在
+            if not os.path.exists(local_model_path):
+                raise FileNotFoundError(f"本地模型路径不存在: {local_model_path}")
+            
+            # 创建嵌入函数，使用本地模型
+            embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=local_model_path,   # 👈 关键：传入本地路径
+                device="cpu",                  # 或 "cuda" 如果有 GPU
+                normalize_embeddings=False     # all-MiniLM-L6-v2 通常不需要归一化（cosine 相似度内部会处理）
+            )
+
+            # 初始化 ChromaDB 客户端
             self.client = chromadb.PersistentClient(
                 path=config.chroma_db_path,
                 settings=Settings(
@@ -101,13 +118,14 @@ class IndexingAgent:
                     allow_reset=True
                 )
             )
-            
-            # 获取或创建集合（使用默认的嵌入函数）
+
+            # 创建/获取集合，并绑定嵌入函数
             self.collection = self.client.get_or_create_collection(
                 name="arxiv_papers",
-                metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
+                embedding_function=embedding_func,      # 👈 绑定自定义嵌入函数
+                metadata={"hnsw:space": "cosine"}
             )
-            
+
             print(f"✓ ChromaDB 初始化成功，当前索引数量: {self.collection.count()}")
             
         except Exception as e:
