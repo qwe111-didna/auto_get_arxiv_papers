@@ -20,6 +20,39 @@ from database import db
 from agents import SearchAgent, IndexingAgent, TranslationAgent, QAAgent
 
 
+def _ensure_json_serializable(obj: Any) -> Any:
+    """
+    递归地清理对象，确保其可以被JSON序列化。
+    处理未转义的特殊字符问题。
+    
+    Args:
+        obj: 需要清理的对象
+    
+    Returns:
+        JSON兼容的对象
+    """
+    if isinstance(obj, dict):
+        return {k: _ensure_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_ensure_json_serializable(item) for item in obj]
+    elif isinstance(obj, str):
+        # 替换无法被JSON正确处理的字符
+        try:
+            # 先尝试将其编码为JSON字符串，看是否会失败
+            json.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            # 如果失败，进行清理
+            obj = obj.replace('\\', '\\\\')
+            obj = obj.replace('"', '\\"')
+            obj = obj.replace('\n', ' ')
+            obj = obj.replace('\r', ' ')
+            obj = obj.replace('\t', ' ')
+            return obj
+    else:
+        return obj
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -315,13 +348,13 @@ async def ask_question(request: QuestionRequest):
                 "success": False,
                 "error": result['error'],
                 "answer": result.get('answer', ''),
-                "sources": result.get('sources', [])
+                "sources": _ensure_json_serializable(result.get('sources', []))
             }
         
         return {
             "success": True,
             "answer": result['answer'],
-            "sources": result['sources']
+            "sources": _ensure_json_serializable(result['sources'])
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"问答失败: {str(e)}")
@@ -335,8 +368,10 @@ async def ask_question_stream(request: QuestionRequest):
         """生成器函数，用于 SSE"""
         try:
             for chunk in qa_agent.answer_stream(request.question, top_k=request.top_k):
+                # 清理数据以确保JSON兼容性
+                cleaned_chunk = _ensure_json_serializable(chunk)
                 # 将每个块编码为 SSE 格式
-                data = json.dumps(chunk, ensure_ascii=False)
+                data = json.dumps(cleaned_chunk, ensure_ascii=False)
                 yield f"data: {data}\n\n"
         except Exception as e:
             error_data = json.dumps({
