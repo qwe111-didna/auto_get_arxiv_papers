@@ -93,6 +93,30 @@ from chromadb.utils import embedding_functions
 from chromadb.config import Settings
 import chromadb
 
+def _escape_metadata_value(value: str) -> str:
+    """
+    转义元数据值，确保其可以安全地序列化为JSON。
+    
+    Args:
+        value: 需要转义的字符串值
+    
+    Returns:
+        已转义的字符串值
+    """
+    if not isinstance(value, str):
+        return str(value)
+    
+    # 只需转义无法被JSON正确处理的字符
+    # json库会自动处理大多数特殊字符，但我们需要确保字符串本身是有效的
+    value = value.replace('\\', '\\\\')  # 反斜杠必须首先转义
+    value = value.replace('"', '\\"')     # 转义双引号
+    value = value.replace('\n', ' ')      # 用空格替换换行符
+    value = value.replace('\r', ' ')      # 用空格替换回车符
+    value = value.replace('\t', ' ')      # 用空格替换制表符
+    
+    return value
+
+
 class IndexingAgent:
     def __init__(self):
         try:
@@ -154,13 +178,13 @@ class IndexingAgent:
             # 构建用于索引的文档文本（标题 + 摘要）
             document = f"{paper['title']}\n\n{paper['summary']}"
             
-            # 构建元数据
+            # 构建元数据，确保所有值都是有效的JSON字符串
             metadata = {
-                'title': paper['title'][:500],  # ChromaDB 元数据有长度限制
-                'authors': paper['authors'][:500],
-                'categories': paper['categories'][:200],
-                'published': paper['published'],
-                'pdf_url': paper['pdf_url']
+                'title': _escape_metadata_value(paper['title'][:500]),
+                'authors': _escape_metadata_value(paper['authors'][:500]),
+                'categories': _escape_metadata_value(paper['categories'][:200]),
+                'published': _escape_metadata_value(paper['published']),
+                'pdf_url': _escape_metadata_value(paper['pdf_url'])
             }
             
             # 添加到 ChromaDB（自动生成嵌入向量）
@@ -213,11 +237,11 @@ class IndexingAgent:
                 try:
                     document = f"{paper['title']}\n\n{paper['summary']}"
                     metadata = {
-                        'title': paper['title'][:500],
-                        'authors': paper['authors'][:500],
-                        'categories': paper['categories'][:200],
-                        'published': paper['published'],
-                        'pdf_url': paper['pdf_url']
+                        'title': _escape_metadata_value(paper['title'][:500]),
+                        'authors': _escape_metadata_value(paper['authors'][:500]),
+                        'categories': _escape_metadata_value(paper['categories'][:200]),
+                        'published': _escape_metadata_value(paper['published']),
+                        'pdf_url': _escape_metadata_value(paper['pdf_url'])
                     }
                     
                     documents.append(document)
@@ -279,14 +303,25 @@ class IndexingAgent:
                 where=filter_dict  # 可选的元数据过滤
             )
             
-            # 整理结果
+            # 整理结果，并对元数据进行清理以确保JSON兼容性
             papers = []
             
             if results['ids'] and results['ids'][0]:
                 for i in range(len(results['ids'][0])):
+                    metadata = results['metadatas'][0][i]
+                    
+                    # 清理元数据中的所有值，确保JSON兼容性
+                    cleaned_metadata = {}
+                    if metadata:
+                        for key, value in metadata.items():
+                            if isinstance(value, str):
+                                cleaned_metadata[key] = _escape_metadata_value(value)
+                            else:
+                                cleaned_metadata[key] = value
+                    
                     paper = {
                         'id': results['ids'][0][i],
-                        'metadata': results['metadatas'][0][i],
+                        'metadata': cleaned_metadata,
                         'document': results['documents'][0][i],
                         'distance': results['distances'][0][i] if 'distances' in results else None
                     }
