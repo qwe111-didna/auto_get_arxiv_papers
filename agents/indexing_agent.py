@@ -2,11 +2,89 @@
 索引 Agent (IndexingAgent)
 使用 ChromaDB 构建论文摘要的向量索引，用于 RAG 检索
 """
+import inspect
 import chromadb
 from chromadb.config import Settings
 from typing import List, Dict, Any, Optional
 from database import db
 from config import config
+
+
+def _ensure_posthog_capture_compatibility() -> None:
+    """
+    确保 PostHog capture 函数兼容 chromadb 的旧版调用形式。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
+    try:
+        import posthog  # type: ignore
+    except Exception:
+        return
+
+    if getattr(posthog, "_artintellect_capture_patched", False):
+        return
+
+    capture_func = getattr(posthog, "capture", None)
+    if capture_func is None:
+        return
+
+    try:
+        signature = inspect.signature(capture_func)
+    except (TypeError, ValueError):
+        return
+
+    positional_params = [
+        param
+        for param in signature.parameters.values()
+        if param.kind in (
+            param.POSITIONAL_ONLY,
+            param.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+
+    if len(positional_params) > 1:
+        return
+
+    original_capture = capture_func
+
+    def legacy_capture(
+        distinct_id: str,
+        event: str,
+        properties: Optional[Dict[str, Any]] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Optional[str]:
+        """
+        兼容 PostHog 新旧版本的 capture 函数。
+
+        Args:
+            distinct_id: 事件关联的用户唯一标识
+            event: 事件名称
+            properties: 事件属性字典
+            *args: 额外的位置参数
+            **kwargs: 额外的关键字参数
+
+        Returns:
+            PostHog 原始 capture 函数的返回值
+        """
+        forward_kwargs: Dict[str, Any] = dict(kwargs)
+        forward_kwargs.setdefault("distinct_id", distinct_id)
+        if properties is not None:
+            forward_kwargs.setdefault("properties", properties)
+        else:
+            forward_kwargs.setdefault("properties", {})
+
+        return original_capture(event, *args, **forward_kwargs)
+
+    posthog.capture = legacy_capture  # type: ignore[assignment]
+    posthog._artintellect_capture_patched = True  # type: ignore[attr-defined]
+
+
+_ensure_posthog_capture_compatibility()
 
 
 class IndexingAgent:
