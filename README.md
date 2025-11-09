@@ -20,11 +20,14 @@ ArtIntellect 是一个基于 **RAG (Retrieval-Augmented Generation)** 和 **多 
 
 - 🔍 **智能搜索**: 从 arXiv 自动获取最新论文，支持多主题订阅
 - 🤖 **RAG 问答**: 基于论文知识库的智能问答系统
+- 💬 **多轮对话**: 支持上下文相关的连续对话，智能查询改写和结果重排
 - 🌐 **摘要翻译**: 一键将英文摘要翻译成中文
 - ⭐ **收藏管理**: 收藏你感兴趣的论文
+- 📧 **邮件服务**: 每日自动发送论文摘要到指定邮箱
 - 🎨 **美观界面**: 响应式设计，支持深色/浅色模式
 - ⚡ **高性能**: 异步并发获取论文，速度优化
 - 💾 **向量检索**: 使用 ChromaDB 进行语义搜索
+- ⏰ **定时任务**: 自动获取论文、建立索引、发送邮件
 
 ---
 
@@ -112,11 +115,25 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-编辑 `.env` 文件，填入你的 ModelScope API Key：
+编辑 `.env` 文件，配置以下参数：
 
 ```env
+# 必需：ModelScope API Key
 MS_API_KEY=your_modelscope_api_key_here
+
+# 可选：邮件服务配置（推荐）
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your_email@gmail.com
+SMTP_PASSWORD=your_app_password_here
+FROM_EMAIL=your_email@gmail.com
+ADMIN_EMAIL=kaiqinglei3@gmail.com
 ```
+
+> 💡 **邮件配置提示**：
+> - Gmail 需要开启两步验证并生成应用专用密码
+> - QQ邮箱需要开启SMTP服务并生成授权码
+> - 163邮箱类似，需要开启SMTP服务
 
 5. **启动应用**
 
@@ -177,7 +194,68 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 3. **生成** (Generate): 使用 LLM 生成专业回答
 4. **引用** (Cite): 附上论文来源链接
 
-### 6. 收藏管理
+### 6. 多轮对话（增强功能）
+
+使用增强版问答 API 进行连续对话：
+
+```javascript
+// 第一次提问
+const response1 = await fetch('/api/qa/enhanced-ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        question: '什么是深度学习？',
+        top_k: 5,
+        enable_rewrite: true,
+        enable_rerank: true
+    })
+});
+const result1 = await response1.json();
+const conversationId = result1.conversation_id;
+
+// 第二次提问（保持上下文）
+const response2 = await fetch('/api/qa/enhanced-ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        question: '它有哪些应用？',
+        conversation_id: conversationId,
+        top_k: 5
+    })
+});
+```
+
+**特点**：
+- 💬 自动维护对话上下文
+- 🔍 智能查询改写
+- 🔄 LLM 结果重排
+- 📝 对话历史管理
+
+### 7. 邮件服务
+
+配置邮件服务后，系统会：
+
+**自动定时邮件**：
+- 📅 每日 8:00：获取最新论文
+- 📧 每日 9:00：发送论文摘要到指定邮箱
+- ⏰ 每 4 小时：检查并索引新论文
+
+**手动发送邮件**：
+```bash
+# 发送每日摘要
+curl -X POST http://localhost:8000/api/email/daily-digest
+
+# 发送自定义邮件
+curl -X POST http://localhost:8000/api/email/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to_email": "example@email.com",
+    "subject": "测试邮件",
+    "content": "<h1>HTML内容</h1>"
+  }'
+```
+
+### 8. 收藏管理
 
 - 点击论文卡片右上角的星标图标收藏论文
 - 在快捷操作中点击"收藏夹"查看收藏的论文
@@ -218,14 +296,23 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - `POST /api/index/build` - 建立向量索引
 - `GET /api/index/stats` - 获取索引统计
 
-### 问答
+### 增强版问答
 
-- `POST /api/qa/ask` - 问答（非流式）
-- `POST /api/qa/ask-stream` - 问答（流式，SSE）
+- `POST /api/qa/enhanced-ask` - 增强版问答（支持多轮对话）
+- `POST /api/qa/enhanced-ask-stream` - 增强版问答（流式）
+- `GET /api/qa/conversation/{conversation_id}` - 获取对话信息
+- `DELETE /api/qa/conversation/{conversation_id}` - 删除对话
+- `POST /api/qa/conversation/{conversation_id}/clear` - 清空对话历史
+
+### 邮件服务
+
+- `POST /api/email/send` - 发送自定义邮件
+- `POST /api/email/daily-digest` - 发送每日论文摘要
+- `GET /api/email/status` - 获取邮件服务状态
 
 ### 系统
 
-- `GET /api/status` - 获取系统状态
+- `GET /api/status` - 获取系统状态（包含任务调度器状态）
 
 ---
 
@@ -394,6 +481,14 @@ python main.py     # 重新启动
 3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
 5. 开启 Pull Request
+
+---
+
+## 🆕 新功能文档
+
+- 📖 [增强功能详细说明](ENHANCED_FEATURES.md) - 多轮对话和邮件服务的完整文档
+- 🧪 [测试脚本](test_enhanced_features.py) - 验证新功能是否正常工作
+- 🎬 [演示脚本](demo_enhanced_features.py) - 交互式功能演示
 
 ---
 
