@@ -179,6 +179,34 @@ class Database:
             print(f"标记论文索引状态失败: {e}")
             return False
     
+    def get_papers_since_date(self, date_str: str) -> List[Dict[str, Any]]:
+        """
+        获取指定日期之后的论文
+        
+        Args:
+            date_str: ISO格式的日期字符串
+        
+        Returns:
+            论文列表
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT p.*, 
+                           CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END as is_favorite
+                    FROM papers p
+                    LEFT JOIN favorites f ON p.id = f.paper_id
+                    WHERE p.published > ?
+                    ORDER BY p.published DESC
+                """, (date_str,))
+                
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"获取指定日期后的论文失败: {e}")
+            return []
+    
     def search_papers(self, keyword: str, limit: int = 50) -> List[Dict[str, Any]]:
         """在本地数据库中搜索论文（标题、摘要）"""
         try:

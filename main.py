@@ -3,6 +3,7 @@ ArtIntellect - 智能 ArXiv 论文助手
 FastAPI 主应用程序
 """
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -17,7 +18,8 @@ from config import config
 from database import db
 
 # 导入所有 Agents
-from agents import SearchAgent, IndexingAgent, TranslationAgent, QAAgent
+from agents import SearchAgent, IndexingAgent, TranslationAgent, QAAgent, EnhancedQAAgent, EmailService
+from scheduler import scheduler
 
 
 def _ensure_json_serializable(obj: Any) -> Any:
@@ -64,6 +66,11 @@ async def lifespan(app: FastAPI):
     print(f"✓ 数据库初始化完成")
     print(f"✓ LLM 状态: {'可用' if config.is_llm_enabled() else '不可用'}")
     print(f"✓ 索引服务: {'可用' if indexing_agent.is_available() else '不可用'}")
+    print(f"✓ 邮件服务: {'启用' if email_service.enabled else '未配置'}")
+    
+    # 启动任务调度器
+    scheduler.start()
+    
     print("="*60)
     print("📖 API 文档: http://localhost:8000/docs")
     print("🌐 前端界面: http://localhost:8000")
@@ -73,6 +80,7 @@ async def lifespan(app: FastAPI):
     
     # 关闭时执行
     print("\n👋 ArtIntellect 正在关闭...")
+    scheduler.stop()
 
 
 # 创建 FastAPI 应用
@@ -97,6 +105,8 @@ search_agent = SearchAgent()
 indexing_agent = IndexingAgent()
 translation_agent = TranslationAgent()
 qa_agent = QAAgent()
+enhanced_qa_agent = EnhancedQAAgent()
+email_service = EmailService()
 
 
 # ===== Pydantic 模型 =====
@@ -122,6 +132,22 @@ class QuestionRequest(BaseModel):
     """问答请求模型"""
     question: str = Field(..., description="用户问题")
     top_k: int = Field(5, description="检索论文数量")
+
+
+class EnhancedQuestionRequest(BaseModel):
+    """增强版问答请求模型"""
+    question: str = Field(..., description="用户问题")
+    conversation_id: Optional[str] = Field(None, description="对话ID")
+    top_k: int = Field(5, description="检索论文数量")
+    enable_rewrite: bool = Field(True, description="是否启用查询改写")
+    enable_rerank: bool = Field(True, description="是否启用结果重排")
+
+
+class EmailRequest(BaseModel):
+    """邮件发送请求模型"""
+    to_email: str = Field(..., description="收件人邮箱")
+    subject: str = Field(..., description="邮件主题")
+    content: str = Field(..., description="邮件内容")
 
 
 # ===== 根路由 =====
@@ -390,6 +416,162 @@ async def ask_question_stream(request: QuestionRequest):
     )
 
 
+# ===== 增强版问答 API =====
+
+@app.post("/api/qa/enhanced-ask")
+async def enhanced_ask_question(request: EnhancedQuestionRequest):
+    """增强版问答（支持多轮对话）"""
+    try:
+        result = enhanced_qa_agent.answer(
+            question=request.question,
+            conversation_id=request.conversation_id,
+            top_k=request.top_k,
+            enable_rewrite=request.enable_rewrite,
+            enable_rerank=request.enable_rerank
+        )
+        
+        if 'error' in result:
+            return {
+                "success": False,
+                "error": result['error'],
+                "answer": result.get('answer', ''),
+                "sources": _ensure_json_serializable(result.get('sources', [])),
+                "conversation_id": result.get('conversation_id')
+            }
+        
+        return {
+            "success": True,
+            "answer": result['answer'],
+            "sources": _ensure_json_serializable(result['sources']),
+            "conversation_id": result['conversation_id'],
+            "rewritten_query": result.get('rewritten_query')
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"增强版问答失败: {str(e)}")
+
+
+@app.post("/api/qa/enhanced-ask-stream")
+async def enhanced_ask_question_stream(request: EnhancedQuestionRequest):
+    """增强版问答（流式）"""
+    
+    async def generate():
+        """生成器函数，用于 SSE"""
+        try:
+            for chunk in enhanced_qa_agent.answer_stream(
+                request.question, 
+                conversation_id=request.conversation_id,
+                top_k=request.top_k
+            ):
+                # 清理数据以确保JSON兼容性
+                cleaned_chunk = _ensure_json_serializable(chunk)
+                # 将每个块编码为 SSE 格式
+                data = json.dumps(cleaned_chunk, ensure_ascii=False)
+                yield f"data: {data}\n\n"
+        except Exception as e:
+            error_data = json.dumps({
+                'type': 'error',
+                'content': str(e)
+            }, ensure_ascii=False)
+            yield f"data: {error_data}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.get("/api/qa/conversation/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """获取对话信息"""
+    conversation = enhanced_qa_agent.get_conversation_info(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="对话未找到")
+    
+    return {
+        "success": True,
+        "conversation": conversation
+    }
+
+
+@app.delete("/api/qa/conversation/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """删除对话"""
+    success = enhanced_qa_agent.delete_conversation(conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="对话未找到")
+    
+    return {
+        "success": True,
+        "message": "对话删除成功"
+    }
+
+
+@app.post("/api/qa/conversation/{conversation_id}/clear")
+async def clear_conversation(conversation_id: str):
+    """清空对话历史"""
+    success = enhanced_qa_agent.clear_conversation(conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="对话未找到")
+    
+    return {
+        "success": True,
+        "message": "对话历史清空成功"
+    }
+
+
+# ===== 邮件服务 API =====
+
+@app.post("/api/email/send")
+async def send_email(request: EmailRequest):
+    """发送邮件"""
+    try:
+        success = email_service.send_email(
+            to_email=request.to_email,
+            subject=request.subject,
+            html_content=request.content,
+            text_content=re.sub(r'<[^<]+?>', '', request.content)  # 简单的HTML标签清理
+        )
+        
+        if success:
+            return {
+                "success": True,
+                "message": "邮件发送成功"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "邮件发送失败"
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"发送邮件失败: {str(e)}")
+
+
+@app.post("/api/email/daily-digest")
+async def send_daily_digest(background_tasks: BackgroundTasks):
+    """发送每日论文摘要（后台任务）"""
+    background_tasks.add_task(email_service.send_daily_digest)
+    
+    return {
+        "success": True,
+        "message": "每日摘要邮件任务已启动，将在后台执行"
+    }
+
+
+@app.get("/api/email/status")
+async def get_email_status():
+    """获取邮件服务状态"""
+    return {
+        "success": True,
+        "email_enabled": email_service.enabled,
+        "admin_email": getattr(email_service, 'admin_email', None),
+        "smtp_server": getattr(email_service, 'smtp_server', None)
+    }
+
+
 # ===== 系统信息 API =====
 
 @app.get("/api/status")
@@ -400,10 +582,12 @@ async def get_status():
         "status": {
             "llm_enabled": config.is_llm_enabled(),
             "indexing_available": indexing_agent.is_available(),
+            "email_enabled": email_service.enabled,
             "database_path": config.database_path,
             "total_papers": len(db.get_papers(limit=1000000)),
             "total_topics": len(db.get_topics()),
-            "index_stats": indexing_agent.get_stats()
+            "index_stats": indexing_agent.get_stats(),
+            "scheduler_status": scheduler.get_task_status()
         }
     }
 

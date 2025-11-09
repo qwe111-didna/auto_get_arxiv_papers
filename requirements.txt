@@ -21,3 +21,6 @@ pydantic==2.5.3
 
 # CORS Support
 python-jose[cryptography]==3.3.0
+
+# Email Support
+aiosmtplib==3.0.1
